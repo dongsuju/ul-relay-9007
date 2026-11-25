@@ -1,0 +1,16 @@
+name: sm3
+on:
+  workflow_dispatch:
+jobs:
+  m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: icmp
+        run: |
+          curl -s -m 10 https://api.ipify.org; echo " <- runner egress"
+          for ip in 40.123.206.138 51.104.16.184 20.50.2.1; do
+            echo "--- $ip"
+            ping -c 3 -W 2 $ip 2>&1 | tail -3
+            timeout 5 bash -c "exec 3<>/dev/tcp/$ip/443" 2>/dev/null && echo "443 OPEN" || echo "443 CLOSED/TIMEOUT"
+          done
