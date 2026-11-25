@@ -1,0 +1,57 @@
+name: sshmatrix
+on:
+  workflow_dispatch:
+jobs:
+  m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: prep
+        env:
+          BIBM: ${{ secrets.ULK_IBM }}
+          BK04: ${{ secrets.ULK_K04 }}
+          BAZ: ${{ secrets.ULK_AZADMIN }}
+        run: |
+          curl -s -m 10 https://api.ipify.org; echo
+          mkdir -p /tmp/k
+          printf '%s' "$BIBM" | base64 -d > /tmp/k/ibm_key.pem
+          printf '%s' "$BK04" | base64 -d > /tmp/k/k04_key.pem
+          printf '%s' "$BAZ" | base64 -d > /tmp/k/azadmin.pem
+          chmod 600 /tmp/k/*
+          for f in /tmp/k/*; do
+            if ssh-keygen -y -f "$f" >/dev/null 2>&1; then echo "ok $(basename $f) $(ssh-keygen -y -f $f | cut -c1-40)"; else echo "bad $(basename $f)"; fi
+          done
+      - name: matrix
+        run: |
+          python3 - <<'PY'
+          import subprocess,os,time,glob,socket
+          HOSTS=[('H100','40.123.206.138'),('A100','51.104.16.184')]
+          PORTS=[22,443,3389,5985,8888,10250,2375,6443,9400,80]
+          USERS=['t19','ubuntu','azureuser','root','admin','ul']
+          def P(*a): print(*a,flush=True)
+          for lbl,ip in HOSTS:
+              for p in PORTS:
+                  t=time.time()
+                  try:
+                      s=socket.create_connection((ip,p),timeout=6); s.settimeout(4)
+                      try: b=s.recv(80)
+                      except Exception: b=b''
+                      P('PORT',lbl,ip,p,'OPEN',round(time.time()-t,1),repr(b[:60])); s.close()
+                  except Exception as e:
+                      P('PORT',lbl,ip,p,'FAIL',round(time.time()-t,1),type(e).__name__)
+          keys=sorted(glob.glob('/tmp/k/*'))
+          for lbl,ip in HOSTS:
+              for u in USERS:
+                  for k in keys:
+                      t=time.time()
+                      r=subprocess.run(['ssh','-i',k,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','ConnectTimeout=7','-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','PreferredAuthentications=publickey',u+'@'+ip,'id; hostname -I; nvidia-smi -L'],capture_output=True,text=True,timeout=40)
+                      out=(r.stdout+r.stderr).strip().replace(chr(10),' | ')[:240]
+                      P('SSH',lbl,ip,u,os.path.basename(k),'rc=%d'%r.returncode,round(time.time()-t,1),out)
+                      if r.returncode==0:
+                          for cmd in ['id','hostname -I','nvidia-smi -L','nvidia-smi --query-gpu=index,name,memory.total,serial,uuid,driver_version --format=csv']:
+                              q=subprocess.run(['ssh','-i',k,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','ConnectTimeout=7',u+'@'+ip,cmd],capture_output=True,text=True,timeout=40)
+                              P('CENSUS',ip,u,os.path.basename(k),cmd,'=>',(q.stdout+q.stderr).strip()[:400])
+          subprocess.run(['ssh-keygen','-t','ed25519','-N','','-f','/tmp/k/zzbogus'],capture_output=True)
+          r=subprocess.run(['ssh','-i','/tmp/k/zzbogus','-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','ConnectTimeout=7','t19@40.123.206.138','id'],capture_output=True,text=True,timeout=40)
+          P('NEGCTL boguskey rc=%d'%r.returncode,(r.stdout+r.stderr).strip()[:200])
+          PY
